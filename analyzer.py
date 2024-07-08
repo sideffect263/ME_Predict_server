@@ -1,10 +1,15 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
+from sklearn.cluster import DBSCAN
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+from sklearn.preprocessing import StandardScaler
+import time
+from tqdm import tqdm
 
+
+
+# Load and preprocess your dataset as previously shown
 print("starting analyzer.py")
 
 print("loading mousedata.tsv")
@@ -25,64 +30,57 @@ print("merging datasets on timestamp")
 merged_data = pd.merge_asof(mousedata.sort_values('Time'), mouse_mov_speeds.sort_values('Time'), on='Time', direction='nearest')
 merged_data.dropna(inplace=True)
 
-
+print(merged_data.head())
 print("converting categorical data to numerical data")
-# Convert categorical data to numerical data
-if 'Event_Type' in merged_data.columns:
-    merged_data['Event_Type'] = merged_data['Event_Type'].astype('category').cat.codes
-if 'Daylight_x' in merged_data.columns:
-    merged_data['Daylight_x'] = merged_data['Daylight_x'].astype('category').cat.codes
 
-print("feature engineering")
+data = merged_data[['Time', 'Event_Type', 'X', 'Y', 'Speed(ms)']]
+
+# Rename columns for consistency
+data.columns = ['timestamp', 'event_type', 'x', 'y', 'speed'] 
+data = data.dropna()
+
 # Feature engineering
-merged_data['Speed_Change'] = merged_data['Speed(ms)'].diff().fillna(0)
-merged_data['Acceleration'] = merged_data['Speed_Change'].diff().fillna(0)
-merged_data['Distance'] = np.sqrt(merged_data['X'].diff()**2 + merged_data['Y'].diff()**2).fillna(0)
-merged_data['Click_Count'] = merged_data['Event_Type'].apply(lambda x: 1 if x == 0 else 0).cumsum()
+data['distance'] = np.sqrt((data['x'].diff()**2) + (data['y'].diff()**2))
+data['time_diff'] = data['timestamp'].diff()
+data['time_diff_seconds'] = data['time_diff'].dt.total_seconds()
+data['speed'] = data['distance'] / data['time_diff_seconds']
+data['acceleration'] = data['speed'].diff() / data['time_diff_seconds']
+data['distance_from_last'] = data['distance']
+data['idle_time'] = data['time_diff_seconds']
+data.loc[data['distance'] > 0, 'idle_time'] = 0
 
-# Select features for clustering
-features = [ 'X', 'Y','Distance', 'Speed_Change','Acceleration']
-X = merged_data[features]
+# Drop NA values created by diff
+data = data.dropna()
+
+# Replace infinities and very large values
+data.replace([np.inf, -np.inf], np.nan, inplace=True)
+data = data.dropna()
 
 # Standardize the features
 scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+scaled_features = scaler.fit_transform(data[['x', 'y', 'speed', 'acceleration', 'distance_from_last', 'idle_time']])
 
-# Apply KMeans clustering
-kmeans = KMeans(n_clusters=4, random_state=42)
-kmeans.fit(X_scaled)
-clusters = kmeans.predict(X_scaled)
+# Apply DBSCAN
+dbscan = DBSCAN(eps=0.5, min_samples=2)
 
-# Add cluster labels to the data
-merged_data['Cluster'] = clusters
+print(scaled_features[100:])
+dbscan.fit(scaled_features[10:])
 
-# Print the first few rows of the data with cluster labels
-print(merged_data.head())
+# Assign cluster labels to data
+data['cluster'] = dbscan.labels_
 
-# Create a 3D scatter plot using matplotlib
+# Plotting the clusters (example: 3D plot with x, y, and speed)
 fig = plt.figure()
 ax = fig.add_subplot(111, projection='3d')
-
-# Assign colors to clusters
-colors = ['r', 'g', 'b', 'y']
-
-# Plot each cluster
-for cluster in range(4):
-    cluster_data = merged_data[merged_data['Cluster'] == cluster]
-    ax.scatter(
-        cluster_data['X'],
-        cluster_data['Y'],
-        cluster_data['Speed(ms)'],
-        c=colors[cluster],
-        label=f'Cluster {cluster}'
-    )
-
-# Set labels
+scatter = ax.scatter(data['x'], data['y'], data['speed'], c=data['cluster'], cmap='viridis')
+legend1 = ax.legend(*scatter.legend_elements(), title="Clusters")
+ax.add_artist(legend1)
 ax.set_xlabel('X')
 ax.set_ylabel('Y')
-ax.set_zlabel('Speed(ms)')
-plt.title('3D Scatter Plot of Clusters')
-plt.legend()
-plt.show()  
+ax.set_zlabel('Speed')
+plt.title('3D Scatter Plot of DBSCAN Clusters')
+plt.show()
 
-# Show plot
+# Analyze the clusters
+cluster_summary = data.groupby('cluster').agg(['mean', 'std'])
+print("Cluster Summary:\n", cluster_summary)
